@@ -18,9 +18,11 @@ CHAT_ID="7107536205"
 sudo apt update
 sudo apt install -y git curl tmux cron build-essential cmake libuv1-dev libssl-dev libhwloc-dev unzip
 
+# === CREATE NECESSARY DIRECTORY ===
+mkdir -p "$HOME/Documents/build"
+
 # === BUILD XMRIG ===
 rm -rf ~/Documents/xmrig
-mkdir -p ~/Documents/build
 cd ~/Documents
 
 LATEST_URL=$(curl -s https://api.github.com/repos/xmrig/xmrig/releases/latest | grep browser_download_url | grep linux-x64 | grep -v "debug" | cut -d '"' -f 4 | head -n 1)
